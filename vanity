@@ -1,0 +1,1740 @@
+local Players          = game:GetService('Players')
+local RunService       = game:GetService('RunService')
+local UserInputService = game:GetService('UserInputService')
+local CoreGui          = game:GetService('CoreGui')
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse       = LocalPlayer:GetMouse()
+local Camera      = workspace.CurrentCamera
+
+if shared._VanityRunning then
+    shared._VanityRunning = false
+    task.wait(2)
+end
+shared._VanityRunning = true
+
+if shared._VanityCleanup then
+    for _, fn in ipairs(shared._VanityCleanup) do pcall(fn) end
+end
+shared._VanityCleanup = {}
+
+local function onCleanup(fn)
+    table.insert(shared._VanityCleanup, fn)
+end
+
+local function isAlive()
+    return shared._VanityRunning == true
+end
+
+local MOV_SpeedActive = false
+local MOV_JumpActive  = false
+local SA_Target       = nil
+local SA_TargetPart   = nil
+local SA_TargetPos    = nil
+
+local AA_Target       = nil
+local AA_Locked       = false
+local AA_PosCache     = {}
+local AA_CacheSize    = 8
+local AA_SampleInterval = 0.03
+local AA_LastUpdate   = 0
+
+local TB_State        = false
+local TB_Target       = nil
+local TB_Locked       = false
+local TB_LastShot     = 0
+
+local TargetLineOutline = Drawing.new('Line')
+TargetLineOutline.Visible     = false
+TargetLineOutline.Thickness   = 3
+TargetLineOutline.Transparency = 0.6
+TargetLineOutline.Color       = Color3.fromRGB(0, 0, 0)
+TargetLineOutline.ZIndex      = 1
+onCleanup(function() pcall(function() TargetLineOutline:Remove() end) end)
+
+local TargetLine = Drawing.new('Line')
+TargetLine.Visible      = false
+TargetLine.Thickness    = 1
+TargetLine.Transparency = 0.3
+TargetLine.Color        = Color3.fromRGB(255, 60, 60)
+TargetLine.ZIndex       = 2
+onCleanup(function() pcall(function() TargetLine:Remove() end) end)
+
+local UI = Instance.new('ScreenGui')
+UI.Name             = 'VanityUI'
+UI.IgnoreGuiInset   = true
+UI.ZIndexBehavior   = Enum.ZIndexBehavior.Sibling
+UI.ResetOnSpawn     = false
+pcall(function() UI.Parent = CoreGui end)
+if not UI.Parent then UI.Parent = LocalPlayer:WaitForChild('PlayerGui') end
+onCleanup(function() pcall(function() UI:Destroy() end) end)
+
+local function CreateTextLabel()
+    local Obj = {
+        _Text = '', _Size = 13, _Position = Vector2.new(0, 0),
+        _Color = Color3.new(1, 1, 1), _Visible = false,
+        _Center = false, _Outline = true,
+        _OutlineColor = Color3.new(0, 0, 0), _Transparency = 1,
+    }
+    local Label = Instance.new('TextLabel')
+    Label.AnchorPoint            = Vector2.new(0.5, 0.5)
+    Label.BorderSizePixel        = 0
+    Label.BackgroundTransparency = 1
+    Label.RichText               = true
+    Label.Font                   = Enum.Font.SourceSansBold
+    Label.TextSize               = Obj._Size
+    Label.TextColor3             = Obj._Color
+    Label.Visible                = Obj._Visible
+    Label.Text                   = ''
+    Label.Parent                 = UI
+    local Stroke = Instance.new('UIStroke')
+    Stroke.Thickness = 1.5
+    Stroke.Color     = Obj._OutlineColor
+    Stroke.Enabled   = Obj._Outline
+    Stroke.Parent    = Label
+    local function UpdatePosition()
+        local Bounds  = Label.TextBounds
+        local OffsetX = Obj._Center and 0 or (Bounds.X / 2)
+        Label.Position = UDim2.fromOffset(Obj._Position.X + OffsetX, Obj._Position.Y + Bounds.Y / 2)
+    end
+    Label:GetPropertyChangedSignal('TextBounds'):Connect(UpdatePosition)
+    local Proxy = {}
+    setmetatable(Proxy, {
+        __newindex = function(_, Key, Value)
+            if Key == 'Text' then Obj._Text = Value; Label.Text = Value
+            elseif Key == 'Size' then Obj._Size = Value; Label.TextSize = Value
+            elseif Key == 'Position' then Obj._Position = Value; UpdatePosition()
+            elseif Key == 'Color' then Obj._Color = Value; Label.TextColor3 = Value
+            elseif Key == 'Visible' then Obj._Visible = Value; Label.Visible = Value
+            elseif Key == 'Center' then Obj._Center = Value; UpdatePosition()
+            elseif Key == 'Outline' then Obj._Outline = Value; Stroke.Enabled = Value
+            elseif Key == 'OutlineColor' then Obj._OutlineColor = Value; Stroke.Color = Value
+            elseif Key == 'Transparency' then
+                Obj._Transparency = Value
+                local Alpha = math.clamp(1 - Value, 0, 1)
+                Label.TextTransparency = Alpha
+                Stroke.Transparency    = Alpha
+            end
+        end,
+        __index = function(_, Key)
+            if Key == 'TextBounds' then return Label.TextBounds
+            elseif Key == 'Remove' or Key == 'Destroy' then return function() Label:Destroy() end
+            elseif Key == 'Text'         then return Obj._Text
+            elseif Key == 'Size'         then return Obj._Size
+            elseif Key == 'Position'     then return Obj._Position
+            elseif Key == 'Color'        then return Obj._Color
+            elseif Key == 'Visible'      then return Obj._Visible
+            elseif Key == 'Center'       then return Obj._Center
+            elseif Key == 'Outline'      then return Obj._Outline
+            elseif Key == 'Transparency' then return Obj._Transparency
+            end
+            return nil
+        end,
+    })
+    return Proxy
+end
+
+local PanelTitle = CreateTextLabel()
+PanelTitle.Visible = false
+PanelTitle.Size    = 18
+PanelTitle.Outline = true
+PanelTitle.Center  = true
+
+local PanelRows = {}
+for i = 1, 8 do
+    local L = CreateTextLabel()
+    L.Visible = false
+    L.Size    = 13
+    L.Outline = true
+    L.Center  = true
+    PanelRows[i] = L
+end
+
+local function CreateESPLabel()
+    local Obj = {
+        _Text = '', _Size = 13, _Position = Vector2.new(0, 0),
+        _Color = Color3.new(1, 1, 1), _Visible = false,
+        _Center = false, _Outline = true,
+        _OutlineColor = Color3.new(0, 0, 0), _Transparency = 1,
+    }
+    local Label = Instance.new('TextLabel')
+    Label.AnchorPoint            = Vector2.new(0.5, 0.5)
+    Label.BorderSizePixel        = 0
+    Label.BackgroundTransparency = 1
+    Label.RichText               = false
+    Label.Font                   = Enum.Font.SourceSansBold
+    Label.TextSize               = Obj._Size
+    Label.TextColor3             = Obj._Color
+    Label.Visible                = Obj._Visible
+    Label.Text                   = ''
+    Label.Parent                 = UI
+    local Stroke = Instance.new('UIStroke')
+    Stroke.Thickness = 1
+    Stroke.Color     = Obj._OutlineColor
+    Stroke.Enabled   = Obj._Outline
+    Stroke.Parent    = Label
+    local function UpdatePosition()
+        local Bounds  = Label.TextBounds
+        local OffsetX = Obj._Center and 0 or (Bounds.X / 2)
+        Label.Position = UDim2.fromOffset(Obj._Position.X + OffsetX, Obj._Position.Y + Bounds.Y / 2)
+    end
+    Label:GetPropertyChangedSignal('TextBounds'):Connect(UpdatePosition)
+    local Proxy = {}
+    setmetatable(Proxy, {
+        __newindex = function(_, Key, Value)
+            if Key == 'Text' then Obj._Text = Value; Label.Text = Value
+            elseif Key == 'Size' then Obj._Size = Value; Label.TextSize = Value
+            elseif Key == 'Position' then Obj._Position = Value; UpdatePosition()
+            elseif Key == 'Color' then Obj._Color = Value; Label.TextColor3 = Value
+            elseif Key == 'Visible' then Obj._Visible = Value; Label.Visible = Value
+            elseif Key == 'Center' then Obj._Center = Value; UpdatePosition()
+            elseif Key == 'Outline' then Obj._Outline = Value; Stroke.Enabled = Value
+            elseif Key == 'OutlineColor' then Obj._OutlineColor = Value; Stroke.Color = Value
+            elseif Key == 'Transparency' then
+                Obj._Transparency = Value
+                local Alpha = math.clamp(1 - Value, 0, 1)
+                Label.TextTransparency = Alpha
+                Stroke.Transparency    = Alpha
+            end
+        end,
+        __index = function(_, Key)
+            if Key == 'TextBounds' then return Label.TextBounds
+            elseif Key == 'Remove' or Key == 'Destroy' then return function() Label:Destroy() end
+            elseif Key == 'Text'         then return Obj._Text
+            elseif Key == 'Size'         then return Obj._Size
+            elseif Key == 'Position'     then return Obj._Position
+            elseif Key == 'Color'        then return Obj._Color
+            elseif Key == 'Visible'      then return Obj._Visible
+            elseif Key == 'Center'       then return Obj._Center
+            elseif Key == 'Outline'      then return Obj._Outline
+            elseif Key == 'Transparency' then return Obj._Transparency
+            end
+            return nil
+        end,
+    })
+    return Proxy
+end
+
+local NameESPDrawings = {}
+
+local function CleanNameESP()
+    for Player, Draw in next, NameESPDrawings do
+        if not Player.Parent then
+            Draw:Remove()
+            NameESPDrawings[Player] = nil
+        end
+    end
+end
+
+Players.PlayerRemoving:Connect(function(Player)
+    local Draw = NameESPDrawings[Player]
+    if Draw then Draw:Remove(); NameESPDrawings[Player] = nil end
+end)
+
+local SA_AllHitParts = {
+    'Head', 'UpperTorso', 'LowerTorso', 'HumanoidRootPart',
+    'LeftUpperArm', 'RightUpperArm', 'LeftLowerArm', 'RightLowerArm',
+    'LeftHand', 'RightHand',
+    'LeftUpperLeg', 'RightUpperLeg', 'LeftLowerLeg', 'RightLowerLeg',
+    'LeftFoot', 'RightFoot',
+}
+
+local function SA_GetClosestBodyPart(character)
+    local mp = UserInputService:GetMouseLocation()
+    local best, bd = nil, math.huge
+    for _, name in ipairs(SA_AllHitParts) do
+        local part = character:FindFirstChild(name)
+        if part and part:IsA('BasePart') then
+            local sp, on = Camera:WorldToViewportPoint(part.Position)
+            if on then
+                local d = (Vector2.new(sp.X, sp.Y) - mp).Magnitude
+                if d < bd then bd = d; best = part end
+            end
+        end
+    end
+    if not best then
+        local camPos = Camera.CFrame.Position
+        local fd = math.huge
+        for _, name in ipairs(SA_AllHitParts) do
+            local part = character:FindFirstChild(name)
+            if part and part:IsA('BasePart') then
+                local d = (part.Position - camPos).Magnitude
+                if d < fd then fd = d; best = part end
+            end
+        end
+    end
+    return best
+end
+
+local function SA_GetClosestPartToCursor(character)
+    local mp = UserInputService:GetMouseLocation()
+    local best, bd = nil, math.huge
+    for _, part in pairs(character:GetChildren()) do
+        if not part:IsA('BasePart') then continue end
+        local sp, on = Camera:WorldToViewportPoint(part.Position)
+        if on then
+            local d = (Vector2.new(sp.X, sp.Y) - mp).Magnitude
+            if d < bd then bd = d; best = part end
+        end
+    end
+    return best
+end
+
+local function SA_GetNearestPointOnPart(part, plane, offset)
+    local mp  = UserInputService:GetMouseLocation()
+    local ray = Camera:ViewportPointToRay(mp.X, mp.Y)
+    local intersection = ray.Origin + (ray.Direction * ray.Direction:Dot(part.Position - ray.Origin))
+    local transform    = part.CFrame:PointToObjectSpace(intersection)
+    local reduction    = offset or 0
+    local reducedSize  = part.Size - (part.Size * reduction)
+    if plane == 'Vertical' then
+        reducedSize = reducedSize * Vector3.new(1, 1, 0)
+    end
+    local half = reducedSize / 2
+    return part.CFrame * Vector3.new(
+        math.clamp(transform.X, -half.X, half.X),
+        math.clamp(transform.Y, -half.Y, half.Y),
+        math.clamp(transform.Z, -half.Z, half.Z)
+    )
+end
+
+local function SA_IsKnocked(char)
+    local hum = char:FindFirstChildOfClass('Humanoid')
+    if hum then
+        local s = hum:GetState()
+        if s == Enum.HumanoidStateType.Dead
+            or s == Enum.HumanoidStateType.Physics
+            or s == Enum.HumanoidStateType.Ragdoll then return true end
+        if hum.Health > 0 and hum.Health <= 2 then return true end
+    end
+    local be = char:FindFirstChild('BodyEffects')
+    if be then
+        local k = be:FindFirstChild('K.O')
+        if k and k.Value then return true end
+    end
+    return false
+end
+
+local function SA_GetClosestPlayer()
+    local SA         = shared.vanity['Silent Aim']
+    local fov        = SA['FOV']
+    local fovEnabled = fov['Enabled']
+    local mp         = UserInputService:GetMouseLocation()
+    local limit      = (fovEnabled and fov['Size'] and ((fov['Size']['X'] + fov['Size']['Y']) / 2)) or math.huge
+    local best, bd   = nil, math.huge
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local char = player.Character
+        if not char then continue end
+        local hrp = char:FindFirstChild('HumanoidRootPart')
+        if not hrp then continue end
+        local sp, on = Camera:WorldToViewportPoint(hrp.Position)
+        if sp.Z > 0 then
+            local d = (Vector2.new(sp.X, sp.Y) - mp).Magnitude
+            if (not fovEnabled or d <= limit) and d < bd then
+                bd = d; best = player
+            end
+        end
+    end
+    return best
+end
+
+local function SA_ResolveHitPosition(character)
+    local SA         = shared.vanity['Silent Aim']
+    local hitPartCfg = SA['Hit Part']
+    if type(hitPartCfg) == 'string' then
+        local p = (hitPartCfg == 'Closest Part')
+            and SA_GetClosestBodyPart(character)
+            or  character:FindFirstChild(hitPartCfg)
+            or  character:FindFirstChild('HumanoidRootPart')
+        return p and p.Position or nil, p
+    end
+    local partName = hitPartCfg['Part'] or 'HumanoidRootPart'
+    if partName == 'Nearest Point' then
+        local p = SA_GetClosestPartToCursor(character)
+        if p then
+            local plane     = hitPartCfg['Plane'] or 'Vertical'
+            local offsetKey = plane == 'Vertical' and 'Vertical' or 'Full'
+            local offset    = (hitPartCfg['Offset'] and hitPartCfg['Offset'][offsetKey]) or 0.7
+            local precision = hitPartCfg['Precision'] or 1
+            local point     = SA_GetNearestPointOnPart(p, plane, offset)
+            if precision < 1 then
+                point = p.Position:Lerp(point, precision)
+            end
+            return point, p
+        end
+        local fb = character:FindFirstChild('HumanoidRootPart')
+        return fb and fb.Position or nil, fb
+    end
+    local part = (partName == 'Closest Part')
+        and SA_GetClosestBodyPart(character)
+        or  character:FindFirstChild(partName)
+        or  character:FindFirstChild('HumanoidRootPart')
+    return part and part.Position or nil, part
+end
+
+local function AA_UpdatePosCache()
+    local now = os.clock()
+    if (now - AA_LastUpdate) < AA_SampleInterval then return end
+    AA_LastUpdate = now
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local hrp = player.Character:FindFirstChild('HumanoidRootPart')
+            if hrp then
+                if not AA_PosCache[player] then AA_PosCache[player] = {} end
+                local cache = AA_PosCache[player]
+                local last  = cache[1]
+                if not last or (now - last.t) >= AA_SampleInterval then
+                    table.insert(cache, 1, { pos = hrp.Position, t = now })
+                    if #cache > AA_CacheSize then cache[#cache] = nil end
+                end
+            end
+        end
+    end
+    for player in pairs(AA_PosCache) do
+        if not player.Parent then AA_PosCache[player] = nil end
+    end
+end
+
+local function AA_GetDeltaVelocity(player)
+    local cache = AA_PosCache[player]
+    if not cache or #cache < 2 then return Vector3.zero end
+    local newest = cache[1]
+    local oldest = cache[math.min(#cache, 4)]
+    local dt     = newest.t - oldest.t
+    if dt <= 0.001 then return Vector3.zero end
+    return (newest.pos - oldest.pos) / dt
+end
+
+local function AA_GetAimPart(char)
+    local AA  = shared.vanity['Aim Assist']
+    local cfg = AA['Hit Part']
+    if type(cfg) == 'string' then
+        if cfg == 'Closest Part' then return SA_GetClosestBodyPart(char) end
+        return char:FindFirstChild(cfg) or char:FindFirstChild('HumanoidRootPart')
+    end
+    local partName = cfg['Part'] or 'Head'
+    if partName == 'Nearest Point' then
+        local p = SA_GetClosestPartToCursor(char)
+        if p then
+            local plane     = cfg['Plane'] or 'Vertical'
+            local offsetKey = plane == 'Vertical' and 'Vertical' or 'Full'
+            local offset    = (cfg['Offset'] and cfg['Offset'][offsetKey]) or 0.7
+            local precision = cfg['Precision'] or 1
+            local point     = SA_GetNearestPointOnPart(p, plane, offset)
+            if precision < 1 then point = p.Position:Lerp(point, precision) end
+            return p, point
+        end
+        return char:FindFirstChild('HumanoidRootPart'), nil
+    end
+    if partName == 'Closest Part' then return SA_GetClosestBodyPart(char), nil end
+    return char:FindFirstChild(partName) or char:FindFirstChild('HumanoidRootPart'), nil
+end
+
+local function AA_GetClosestPlayer()
+    local AA    = shared.vanity['Aim Assist']
+    local fov   = AA['FOV']
+    local mp    = UserInputService:GetMouseLocation()
+    local limit = (fov['Enabled'] and fov['Size'] and ((fov['Size']['X'] + fov['Size']['Y']) / 2)) or math.huge
+    local best, bd = nil, math.huge
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local char = player.Character
+        if not char then continue end
+        if SA_IsKnocked(char) then continue end
+        local hum = char:FindFirstChildOfClass('Humanoid')
+        if not hum or hum.Health <= 0 then continue end
+        local hrp = char:FindFirstChild('HumanoidRootPart')
+        if not hrp then continue end
+        local dist3d = (hrp.Position - Camera.CFrame.Position).Magnitude
+        if dist3d > (AA['Max Range'] or math.huge) then continue end
+        local sp, on = Camera:WorldToViewportPoint(hrp.Position)
+        if on and sp.Z > 0 then
+            local d = (Vector2.new(sp.X, sp.Y) - mp).Magnitude
+            if d <= limit and d < bd then bd = d; best = player end
+        end
+    end
+    return best
+end
+
+local function TB_GetClosestPlayer()
+    local TB    = shared.vanity['Triggerbot']
+    local fov   = TB['FOV']
+    local mp    = UserInputService:GetMouseLocation()
+    local limit = (fov['Enabled'] and fov['Size'] and ((fov['Size']['Width'] + fov['Size']['Height']) / 2)) or math.huge
+    local best, bd = nil, math.huge
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local char = player.Character
+        if not char then continue end
+        if SA_IsKnocked(char) then continue end
+        local hum = char:FindFirstChildOfClass('Humanoid')
+        if not hum or hum.Health <= 0 then continue end
+        local hrp = char:FindFirstChild('HumanoidRootPart')
+        if not hrp then continue end
+        local dist3d = (hrp.Position - Camera.CFrame.Position).Magnitude
+        if dist3d > (TB['Max Range'] or math.huge) then continue end
+        local sp, on = Camera:WorldToViewportPoint(hrp.Position)
+        if on and sp.Z > 0 then
+            local d = (Vector2.new(sp.X, sp.Y) - mp).Magnitude
+            if d <= limit and d < bd then bd = d; best = player end
+        end
+    end
+    return best
+end
+
+local function TB_IsPlayerInFOV(player)
+    local TB  = shared.vanity['Triggerbot']
+    local fov = TB['FOV']
+    if not fov['Enabled'] then return true end
+    local char = player.Character
+    if not char then return false end
+    local hrp = char:FindFirstChild('HumanoidRootPart')
+    if not hrp then return false end
+    local sp, on = Camera:WorldToViewportPoint(hrp.Position)
+    if not on then return false end
+    local mp = UserInputService:GetMouseLocation()
+    local dx = math.abs(sp.X - mp.X)
+    local dy = math.abs(sp.Y - mp.Y)
+    return dx <= (fov['Size']['Width'] / 2) and dy <= (fov['Size']['Height'] / 2)
+end
+
+local function TB_IsOnPlayer()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local tool = char:FindFirstChildOfClass('Tool')
+    if not tool then return nil end
+    local mp = UserInputService:GetMouseLocation()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local tc = player.Character
+        if not tc then continue end
+        if SA_IsKnocked(tc) then continue end
+        local hum = tc:FindFirstChildOfClass('Humanoid')
+        if not hum or hum.Health <= 0 then continue end
+        for _, part in pairs(tc:GetChildren()) do
+            if part:IsA('BasePart') then
+                local sp, on = Camera:WorldToViewportPoint(part.Position)
+                if on then
+                    local d = (Vector2.new(sp.X, sp.Y) - mp).Magnitude
+                    if d <= 15 then return player end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local RawMeta     = getrawmetatable(game)
+local oldIndex    = RawMeta.__index
+local oldNamecall = RawMeta.__namecall
+setreadonly(RawMeta, false)
+
+RawMeta.__index = newcclosure(function(self, key)
+    if not checkcaller() then
+        local SA = shared.vanity['Silent Aim']
+        if SA['Enabled'] and SA_TargetPart and SA_TargetPos then
+            if self == Mouse and (key == 'Hit' or key == 'Target') then
+                local pred = SA['Prediction']
+                local vel  = SA_TargetPart.AssemblyLinearVelocity or SA_TargetPart.Velocity
+                local pos  = SA_TargetPos
+                if pred['Enabled'] then
+                    local v = pred['Values']
+                    pos = pos + Vector3.new(vel.X * v['X'], vel.Y * v['Y'], vel.Z * v['Z'])
+                end
+                if key == 'Hit'    then return CFrame.new(pos) end
+                if key == 'Target' then return SA_TargetPart end
+            end
+        end
+    end
+    return oldIndex(self, key)
+end)
+
+RawMeta.__namecall = newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    local args   = { ... }
+    if not checkcaller() then
+        local SA = shared.vanity['Silent Aim']
+        if SA['Enabled'] and SA_TargetPart and SA_TargetPos then
+            local pred = SA['Prediction']
+            local vel  = SA_TargetPart.AssemblyLinearVelocity or SA_TargetPart.Velocity
+            local pos  = SA_TargetPos
+            if pred['Enabled'] then
+                local v = pred['Values']
+                pos = pos + Vector3.new(vel.X * v['X'], vel.Y * v['Y'], vel.Z * v['Z'])
+            end
+            if method == 'FindPartOnRayWithIgnoreList'
+                or method == 'FindPartOnRayWithWhitelist'
+                or method == 'FindPartOnRay' then
+                args[1] = Ray.new(Camera.CFrame.Position, (pos - Camera.CFrame.Position).Unit * 1000)
+                return oldNamecall(self, unpack(args))
+            elseif method == 'Raycast' then
+                args[2] = (pos - args[1]).Unit * 1000
+                return oldNamecall(self, unpack(args))
+            end
+        end
+    end
+    return oldNamecall(self, ...)
+end)
+
+setreadonly(RawMeta, true)
+
+onCleanup(function()
+    pcall(function()
+        setreadonly(RawMeta, false)
+        RawMeta.__index    = oldIndex
+        RawMeta.__namecall = oldNamecall
+        setreadonly(RawMeta, true)
+    end)
+end)
+
+local function getMovKey(char)
+    local tool = char:FindFirstChildOfClass('Tool')
+    local hum  = char:FindFirstChildOfClass('Humanoid')
+    local isReload = false
+    if tool then
+        local ammo = tool:FindFirstChild('Ammo')
+        if ammo and ammo.Value == 0 then isReload = true end
+        if not isReload then
+            local reloading = tool:FindFirstChild('Reloading')
+            if reloading and reloading.Value then isReload = true end
+        end
+    end
+    local isLowHealth = hum and hum.Health > 0 and hum.Health <= 25
+    if isLowHealth then return 'Low Health' end
+    if isReload    then return 'Reload' end
+    return 'Normal'
+end
+local function rgb(c)
+    return string.format('rgb(%d,%d,%d)',
+        math.floor(c.R * 255 + 0.5),
+        math.floor(c.G * 255 + 0.5),
+        math.floor(c.B * 255 + 0.5))
+end
+
+local inputConn = UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    local binds      = shared.vanity['Keybinds']
+    local multibinds = shared.vanity['Multibinds']
+    local handledByMulti = {}
+
+    for _, group in ipairs(multibinds) do
+        if not group['Enabled'] then continue end
+        local key = group['Key']
+        if not key then continue end
+        local matched = false
+        pcall(function() matched = input.KeyCode == Enum.KeyCode[key:upper()] end)
+        if not matched then continue end
+
+        local allOn = true
+        for _, feat in ipairs(group['Features']) do
+            if feat == 'Silent Aim'  then if not shared.vanity['Silent Aim']['Enabled'] then allOn = false end
+            elseif feat == 'Aim Assist'  then if not AA_Locked then allOn = false end
+            elseif feat == 'Triggerbot'  then if not TB_State  then allOn = false end
+            elseif feat == 'ESP'         then if not shared.vanity['Name ESP']['Enabled'] then allOn = false end
+            elseif feat == 'Walk Speed'  then if not MOV_SpeedActive then allOn = false end
+            elseif feat == 'Jump Power'  then if not MOV_JumpActive  then allOn = false end
+            end
+        end
+
+        local turnOn = not allOn
+
+        for _, feat in ipairs(group['Features']) do
+            local featureKey = nil
+            if     feat == 'Silent Aim'  then featureKey = binds['Silent Aim Toggle']
+            elseif feat == 'Aim Assist'  then featureKey = binds['Aim Assist Toggle']
+            elseif feat == 'Triggerbot'  then featureKey = binds['Triggerbot Toggle']
+            elseif feat == 'ESP'         then featureKey = binds['ESP Toggle']
+            elseif feat == 'Walk Speed'  then featureKey = binds['Walk Speed Toggle']
+            elseif feat == 'Jump Power'  then featureKey = binds['Jump Power Toggle']
+            end
+            if featureKey and featureKey:upper() == key:upper() then
+                handledByMulti[feat] = true
+            end
+
+            if feat == 'Silent Aim' then
+                local SA = shared.vanity['Silent Aim']
+                SA['Enabled'] = turnOn
+                if SA['Mode'] == 'Target' then
+                    if turnOn then SA_Target = SA_GetClosestPlayer()
+                    else SA_Target = nil; SA_TargetPart = nil end
+                end
+            elseif feat == 'Aim Assist' then
+                AA_Locked = turnOn
+                if turnOn then AA_Target = AA_GetClosestPlayer() else AA_Target = nil end
+            elseif feat == 'Triggerbot' then
+                TB_State = turnOn
+                if turnOn then
+                    TB_Target = TB_GetClosestPlayer()
+                    TB_Locked = TB_Target ~= nil
+                else
+                    TB_Target = nil; TB_Locked = false
+                end
+            elseif feat == 'ESP' then
+                shared.vanity['Name ESP']['Enabled'] = turnOn
+            elseif feat == 'Walk Speed' then
+                MOV_SpeedActive = turnOn
+                if not turnOn then
+                    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass('Humanoid')
+                    if hum then hum.WalkSpeed = 16 end
+                end
+            elseif feat == 'Jump Power' then
+                MOV_JumpActive = turnOn
+            end
+        end
+    end
+
+    local wsKey = binds['Walk Speed Toggle']
+    if wsKey and not handledByMulti['Walk Speed'] then
+        local ok, kc = pcall(function() return Enum.KeyCode[wsKey:upper()] end)
+        if ok and kc and input.KeyCode == kc then
+            if shared.vanity['Character']['Movement']['Walk Speed']['Enabled'] then
+                MOV_SpeedActive = not MOV_SpeedActive
+                if not MOV_SpeedActive then
+                    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass('Humanoid')
+                    if hum then hum.WalkSpeed = 16 end
+                end
+            end
+        end
+    end
+
+    local jpKey = binds['Jump Power Toggle']
+    if jpKey and not handledByMulti['Jump Power'] then
+        local ok, kc = pcall(function() return Enum.KeyCode[jpKey:upper()] end)
+        if ok and kc and input.KeyCode == kc then
+            if shared.vanity['Character']['Movement']['Jump Power']['Enabled'] then
+                MOV_JumpActive = not MOV_JumpActive
+            end
+        end
+    end
+
+    local espKey = binds['ESP Toggle']
+    if espKey and not handledByMulti['ESP'] then
+        local ok, kc = pcall(function() return Enum.KeyCode[espKey:upper()] end)
+        if ok and kc and input.KeyCode == kc then
+            shared.vanity['Name ESP']['Enabled'] = not shared.vanity['Name ESP']['Enabled']
+        end
+    end
+
+    local saKey = binds['Silent Aim Toggle']
+    if saKey and not handledByMulti['Silent Aim'] then
+        local ok, kc = pcall(function() return Enum.KeyCode[saKey:upper()] end)
+        if ok and kc and input.KeyCode == kc then
+            local SA = shared.vanity['Silent Aim']
+            SA['Enabled'] = not SA['Enabled']
+            if SA['Mode'] == 'Target' then
+                if SA['Enabled'] then SA_Target = SA_GetClosestPlayer()
+                else SA_Target = nil; SA_TargetPart = nil end
+            end
+        end
+    end
+
+    local aaKey = binds['Aim Assist Toggle']
+    if aaKey and not handledByMulti['Aim Assist'] then
+        local ok, kc = pcall(function() return Enum.KeyCode[aaKey:upper()] end)
+        if ok and kc and input.KeyCode == kc then
+            local AA = shared.vanity['Aim Assist']
+            if AA['Mode'] == 'Hold' then
+                AA_Locked = true
+                AA_Target = AA_GetClosestPlayer()
+            else
+                AA_Locked = not AA_Locked
+                if AA_Locked then AA_Target = AA_GetClosestPlayer() else AA_Target = nil end
+            end
+        end
+    end
+
+    local tbKey = binds['Triggerbot Toggle']
+    if tbKey and not handledByMulti['Triggerbot'] then
+        local ok, kc = pcall(function() return Enum.KeyCode[tbKey:upper()] end)
+        if ok and kc and input.KeyCode == kc then
+            local TB = shared.vanity['Triggerbot']
+            if TB['Type'] == 'Hold' then
+                TB_State = true
+                if TB['Selection'] == 'Target' then
+                    TB_Target = TB_GetClosestPlayer()
+                    TB_Locked = TB_Target ~= nil
+                end
+            else
+                TB_State = not TB_State
+                if TB_State then
+                    if TB['Selection'] == 'Target' then
+                        TB_Target = TB_GetClosestPlayer()
+                        TB_Locked = TB_Target ~= nil
+                    end
+                else
+                    TB_Target = nil; TB_Locked = false
+                end
+            end
+        end
+    end
+end)
+onCleanup(function() pcall(function() inputConn:Disconnect() end) end)
+
+local inputEndConn = UserInputService.InputEnded:Connect(function(input, processed)
+    local binds = shared.vanity['Keybinds']
+    local aaKey = binds['Aim Assist Toggle']
+    if aaKey then
+        local ok, kc = pcall(function() return Enum.KeyCode[aaKey:upper()] end)
+        if ok and kc and input.KeyCode == kc then
+            local AA = shared.vanity['Aim Assist']
+            if AA['Mode'] == 'Hold' then
+                AA_Locked = false
+                AA_Target = nil
+            end
+        end
+    end
+    local tbKey = binds['Triggerbot Toggle']
+    if tbKey then
+        local ok, kc = pcall(function() return Enum.KeyCode[tbKey:upper()] end)
+        if ok and kc and input.KeyCode == kc then
+            local TB = shared.vanity['Triggerbot']
+            if TB['Type'] == 'Hold' then
+                TB_State  = false
+                TB_Target = nil
+                TB_Locked = false
+            end
+        end
+    end
+end)
+onCleanup(function() pcall(function() inputEndConn:Disconnect() end) end)
+
+local mainConn = RunService.RenderStepped:Connect(function()
+    if not isAlive() then return end
+
+    local WS = shared.vanity['Character']['Movement']['Walk Speed']
+    if WS['Enabled'] and MOV_SpeedActive then
+        local char = LocalPlayer.Character
+        if char then
+            local hum = char:FindFirstChildOfClass('Humanoid')
+            if hum then
+                local key  = getMovKey(char)
+                local mult = WS[key] and WS[key]['Multiplier'] or 1
+                hum.WalkSpeed = mult * 100
+            end
+        end
+    end
+
+    local JP = shared.vanity['Character']['Movement']['Jump Power']
+    if JP['Enabled'] and MOV_JumpActive and not JP['Spiderman Mode'] then
+        local char = LocalPlayer.Character
+        if char then
+            local hum = char:FindFirstChildOfClass('Humanoid')
+            if hum then
+                local key  = getMovKey(char)
+                local mult = JP[key] and JP[key]['Multiplier'] or 1
+                hum.JumpPower = mult * 100
+            end
+        end
+    end
+
+    local SA = shared.vanity['Silent Aim']
+    if SA['Enabled'] then
+        if SA['Mode'] == 'Automatic' then
+            SA_Target = SA_GetClosestPlayer()
+        end
+        if SA_Target and SA_Target.Character then
+            local char = SA_Target.Character
+            if SA_IsKnocked(char) then
+                SA_Target = nil; SA_TargetPart = nil; SA_TargetPos = nil
+            else
+                local pos, part = SA_ResolveHitPosition(char)
+                SA_TargetPart = part
+                SA_TargetPos  = pos
+            end
+        else
+            SA_Target = nil; SA_TargetPart = nil; SA_TargetPos = nil
+        end
+    else
+        SA_TargetPart = nil; SA_TargetPos = nil
+        if SA['Mode'] == 'Automatic' then SA_Target = nil end
+    end
+
+    AA_UpdatePosCache()
+    local AA = shared.vanity['Aim Assist']
+    if AA['Enabled'] and AA_Locked and AA_Target then
+        local char = AA_Target.Character
+        local hum  = char and char:FindFirstChildOfClass('Humanoid')
+        if not char or not hum or hum.Health <= 0 or SA_IsKnocked(char) then
+            AA_Locked = false
+            AA_Target = nil
+        else
+            local part, overridePos = AA_GetAimPart(char)
+            if part then
+                local targetPos = overridePos or part.Position
+                local pred = AA['Prediction']
+                if pred['Enabled'] then
+                    local vel = AA_GetDeltaVelocity(AA_Target)
+                    local pv  = pred['Value'] or 0.13
+                    targetPos = targetPos + vel * Vector3.new(pv, pv, pv)
+                end
+                local camPos    = Camera.CFrame.Position
+                local desiredCF = CFrame.new(camPos, targetPos)
+                local smooth    = AA['Smoothness']
+                if smooth['Enabled'] then
+                    local alpha = smooth['Value'] or 0.08
+                    Camera.CFrame = Camera.CFrame:Lerp(desiredCF, alpha)
+                else
+                    Camera.CFrame = desiredCF
+                end
+            end
+        end
+    end
+
+    local TB = shared.vanity['Triggerbot']
+    if TB['Enabled'] and TB_State then
+        local target
+        if TB['Selection'] == 'Automatic' then
+            target = TB_GetClosestPlayer()
+        else
+            target = TB_Locked and TB_Target or nil
+        end
+        if target then
+            local shouldFire = false
+            if TB['Hit Check'] == 'FOV' then
+                shouldFire = TB_IsPlayerInFOV(target)
+            else
+                shouldFire = TB_IsOnPlayer() == target
+            end
+            if shouldFire then
+                local char = LocalPlayer.Character
+                local tool = char and char:FindFirstChildOfClass('Tool')
+                if tool and tool.Name ~= '[Knife]' and tool:FindFirstChild('Ammo') then
+                    local now = tick()
+                    local cd  = 0
+                    if TB['Delay']['Enabled'] then
+                        local dv = TB['Delay']['Value']
+                        cd = dv[1] + math.random() * (dv[2] - dv[1])
+                    end
+                    if (now - TB_LastShot) >= cd then
+                        TB_LastShot = now
+                        local pred = TB['Prediction']
+                        if pred['Enabled'] then
+                            local hrp = target.Character and target.Character:FindFirstChild('HumanoidRootPart')
+                            if hrp then
+                                local vel = AA_GetDeltaVelocity(target)
+                                local pv  = pred['Value'] or 0.13
+                                local fakePart = hrp
+                                local fakePos  = hrp.Position + vel * Vector3.new(pv, pv, pv)
+                                SA_TargetPos  = fakePos
+                                SA_TargetPart = fakePart
+                            end
+                        end
+                        tool:Activate()
+                    end
+                end
+            end
+        end
+    end
+
+    local TL = SA['Target Line']
+    if TL['Enabled'] and SA['Enabled'] and SA_Target and SA_TargetPart then
+        local headPart = SA_Target.Character and SA_Target.Character:FindFirstChild('Head')
+        local aimPart  = headPart or SA_TargetPart
+        local targetSP, targetOn = Camera:WorldToViewportPoint(aimPart.Position)
+        if targetOn then
+            local mp      = UserInputService:GetMouseLocation()
+            local from    = Vector2.new(mp.X, mp.Y)
+            local to      = Vector2.new(targetSP.X, targetSP.Y)
+            local col     = TL['Color']
+            local thick   = TL['Thickness'] or 1
+            local trans   = TL['Transparency'] or 0.3
+            local outCol  = TL['OutlineColor'] or Color3.fromRGB(0, 0, 0)
+
+            TargetLineOutline.From        = from
+            TargetLineOutline.To          = to
+            TargetLineOutline.Thickness   = thick + 2
+            TargetLineOutline.Color       = outCol
+            TargetLineOutline.Transparency = math.clamp(trans + 0.3, 0, 1)
+            TargetLineOutline.Visible     = true
+
+            TargetLine.From        = from
+            TargetLine.To          = to
+            TargetLine.Thickness   = thick
+            TargetLine.Color       = col
+            TargetLine.Transparency = trans
+            TargetLine.Visible     = true
+        else
+            TargetLine.Visible        = false
+            TargetLineOutline.Visible = false
+        end
+    else
+        TargetLine.Visible        = false
+        TargetLineOutline.Visible = false
+    end
+
+    local ESPCfg      = shared.vanity['Name ESP']
+    local ESPSettings = ESPCfg['Settings']
+    local ESPColors   = ESPSettings['Color Settings']
+    local ESPSize     = ESPSettings['Text Size'] or 13
+
+    if ESPCfg['Enabled'] then
+        for _, Player in next, Players:GetPlayers() do
+            if Player == LocalPlayer then continue end
+            local Character = Player.Character
+            if not Character then
+                if NameESPDrawings[Player] then NameESPDrawings[Player].Visible = false end
+                continue
+            end
+            local HumanoidRootPart = Character:FindFirstChild('HumanoidRootPart')
+            if not HumanoidRootPart then
+                if NameESPDrawings[Player] then NameESPDrawings[Player].Visible = false end
+                continue
+            end
+            local ESPPos = HumanoidRootPart.Position + Vector3.new(0, -2.5, 0)
+            local ScreenPos, OnScreen = Camera:WorldToViewportPoint(ESPPos)
+            if not OnScreen then
+                if NameESPDrawings[Player] then NameESPDrawings[Player].Visible = false end
+                continue
+            end
+            if not NameESPDrawings[Player] then
+                local Draw = CreateESPLabel()
+                Draw.Outline = true
+                Draw.Center  = true
+                NameESPDrawings[Player] = Draw
+            end
+            local Draw     = NameESPDrawings[Player]
+            local IsTarget = (Player == SA_Target or Player == AA_Target or Player == TB_Target)
+            Draw.Text     = Player.DisplayName
+            Draw.Size     = ESPSize
+            Draw.Color    = IsTarget and ESPColors['Locked Color'] or ESPColors['Color']
+            Draw.Position = Vector2.new(math.floor(ScreenPos.X + 0.5), math.floor(ScreenPos.Y + 0.5))
+            Draw.Visible  = true
+        end
+    else
+        for _, Draw in next, NameESPDrawings do
+            Draw.Visible = false
+        end
+    end
+    CleanNameESP()
+
+    local PanelCfg = shared.vanity['Panel']
+    if not PanelCfg['Enabled'] then
+        PanelTitle.Visible = false
+        for _, L in ipairs(PanelRows) do L.Visible = false end
+        return
+    end
+
+    local PColors = PanelCfg['Colors']
+    local PPos    = PanelCfg['Position']
+    local BaseX   = math.floor(PPos['X'] + 0.5)
+    local BaseY   = math.floor(PPos['Y'] + 0.5)
+
+    local titleColor   = rgb(PColors['Title Color'])
+    local featureColor = rgb(PColors['Feature Color'])
+    local activeColor  = rgb(PColors['Active Color'])
+
+    PanelTitle.Text     = string.format('<font color="%s">%s</font>', titleColor, PanelCfg['Title'])
+    PanelTitle.Position = Vector2.new(BaseX, BaseY)
+    PanelTitle.Size     = 17
+    PanelTitle.Visible  = true
+
+    local OffsetY  = BaseY + 22
+    local rowIndex = 0
+
+    local function Row(label, isOn, targetName)
+        rowIndex = rowIndex + 1
+        local L = PanelRows[rowIndex]
+        if not L then return end
+        local valueStr
+        if isOn and targetName then
+            valueStr = string.format('<font color="%s">%s: %s</font>', activeColor, label, targetName)
+        elseif isOn then
+            valueStr = string.format('<font color="%s">%s: on</font>', featureColor, label)
+        else
+            valueStr = string.format('<font color="rgb(160,160,160)">%s: off</font>', label)
+        end
+        L.Text     = valueStr
+        L.Color    = Color3.new(1, 1, 1)
+        L.Position = Vector2.new(BaseX, OffsetY)
+        L.Visible  = true
+        OffsetY    = OffsetY + 17
+    end
+
+    local saOn = shared.vanity['Silent Aim']['Enabled']
+    Row('silent', saOn, saOn and (SA_Target and SA_Target.DisplayName or nil) or nil)
+    Row('speed',  MOV_SpeedActive, nil)
+    local aaOn = shared.vanity['Aim Assist']['Enabled'] and AA_Locked
+    Row('assist', aaOn, aaOn and (AA_Target and AA_Target.DisplayName or nil) or nil)
+    local tbOn = shared.vanity['Triggerbot']['Enabled'] and TB_State
+    Row('trigger', tbOn, tbOn and (TB_Target and TB_Target.DisplayName or nil) or nil)
+
+    for i = rowIndex + 1, #PanelRows do
+        PanelRows[i].Visible = false
+    end
+end)
+onCleanup(function() pcall(function() mainConn:Disconnect() end) end)
+
+do
+    local COOLDOWN_KEYS = {
+        'FireRate','Firerate','fireRate','firerate',
+        'Cooldown','cooldown','CoolDown',
+        'FireDelay','fireDelay','FireCooldown',
+        'ShootCooldown','shootCooldown',
+        'ShootingCooldown','shootingCooldown',
+        'Delay','delay',
+        'TimeBetweenShots','timeBetweenShots',
+        'ShotCooldown','shotCooldown',
+    }
+    local COOLDOWN_SET = {}
+    for _, k in ipairs(COOLDOWN_KEYS) do COOLDOWN_SET[k] = true end
+
+    local gcCache      = setmetatable({}, { __mode = 'k' })
+    local lastGcScan   = 0
+    local GC_INTERVAL  = 15
+    local delayFrame   = 0
+    local lastDCTool   = nil
+    local patchPending = false
+
+    local function getDelay(tool)
+        local DC   = shared.vanity['Character']['Gun Modifications']['Delay Changer']
+        local weps = DC['Weapons']
+        if tool and weps and weps[tool.Name] ~= nil then
+            return weps[tool.Name]
+        end
+        return DC['Amount'] or 0
+    end
+
+    local function patchConnections(tool, delayValue)
+        if not getconnections then return end
+        pcall(function()
+            for _, conn in ipairs(getconnections(tool.Activated)) do
+                local func = conn.Function
+                if not func then continue end
+                local info = debug.getinfo and debug.getinfo(func)
+                if not info then continue end
+                for i = 1, (info.nups or 0) do
+                    local ok, val = pcall(debug.getupvalue, func, i)
+                    if not ok or val == nil then continue end
+                    if type(val) == 'table' then
+                        for key, v in pairs(val) do
+                            if COOLDOWN_SET[key] and type(v) == 'number' and v > delayValue then
+                                pcall(rawset, val, key, delayValue)
+                            end
+                        end
+                    elseif type(val) == 'number' and val > 0 and val < 10 then
+                        pcall(debug.setupvalue, func, i, delayValue)
+                    end
+                end
+            end
+        end)
+    end
+
+    local function patchValueBases(tool, delayValue)
+        for _, child in ipairs(tool:GetDescendants()) do
+            if child:IsA('NumberValue') or child:IsA('IntValue') then
+                if COOLDOWN_SET[child.Name] then
+                    child.Value = delayValue
+                end
+            end
+        end
+        if tool:GetAttribute('ShootingCooldown') then
+            tool:SetAttribute('ShootingCooldown', delayValue)
+        end
+    end
+
+    local function gcScan()
+        if not getgc then return end
+        pcall(function()
+            local startTime = tick()
+            for _, obj in ipairs(getgc(true)) do
+                if tick() - startTime > 0.06 then break end
+                if type(obj) == 'table' and not gcCache[obj] then
+                    for key in pairs(obj) do
+                        if COOLDOWN_SET[key] then gcCache[obj] = true; break end
+                    end
+                end
+            end
+        end)
+    end
+
+    local function applyDelayPatches(tool, delayValue)
+        patchPending = false
+        if not shared.vanity['Character']['Gun Modifications']['Delay Changer']['Enabled'] then return end
+        pcall(patchConnections, tool, delayValue)
+        pcall(patchValueBases,  tool, delayValue)
+    end
+
+    local dcConn = RunService.Heartbeat:Connect(function()
+        if not isAlive() then return end
+        local DC = shared.vanity['Character']['Gun Modifications']['Delay Changer']
+        if not DC['Enabled'] then return end
+        local char = LocalPlayer.Character
+        if not char then return end
+        local tool = char:FindFirstChildOfClass('Tool')
+        if not tool then return end
+
+        local hasScript = tool:FindFirstChildOfClass('LocalScript')
+            or tool:FindFirstChildOfClass('Script')
+            or tool:FindFirstChildOfClass('ModuleScript')
+        if not hasScript then return end
+
+        local delayValue = getDelay(tool)
+        delayFrame = delayFrame + 1
+
+        local toolChanged = tool ~= lastDCTool
+        if toolChanged then
+            lastDCTool = tool
+            if not patchPending then
+                patchPending = true
+                task.defer(applyDelayPatches, tool, delayValue)
+            end
+        end
+
+        if not toolChanged and delayFrame % 12 == 0 then
+            task.defer(applyDelayPatches, tool, delayValue)
+        end
+
+        local now = tick()
+        if now - lastGcScan >= GC_INTERVAL then
+            lastGcScan = now
+            task.spawn(gcScan)
+        end
+
+        if delayFrame % 8 == 0 then
+            for tbl in pairs(gcCache) do
+                pcall(function()
+                    for key, v in pairs(tbl) do
+                        if COOLDOWN_SET[key] and type(v) == 'number' and v > delayValue then
+                            tbl[key] = delayValue
+                        end
+                    end
+                end)
+            end
+        end
+    end)
+    onCleanup(function() pcall(function() dcConn:Disconnect() end) end)
+end
+
+do
+    local function applySpread(...)
+        local SpreadCfg = shared.vanity['Character']['Gun Modifications']['Spread Changer']
+        if not SpreadCfg['Enabled'] then return nil end
+        local args = { ... }
+        local tool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass('Tool')
+        local multiplier = SpreadCfg['Amount'] or 0
+        if tool and SpreadCfg['Weapons'][tool.Name] ~= nil then
+            multiplier = SpreadCfg['Weapons'][tool.Name]
+        end
+        local placeId = game.PlaceId
+        if placeId == 75947843575468 or placeId == 103176029075121 then
+            local isSpread = (#args == 0)
+                or (args[1] and args[2] and args[1] < 0 and args[2] > 0 and math.abs(args[1]) <= 0.5)
+            if isSpread then
+                return multiplier == 0 and 0.001 or multiplier, true
+            end
+            return nil
+        else
+            return multiplier, false
+        end
+    end
+
+    if hookfunction then
+        local oldRandom
+        oldRandom = hookfunction(math.random, newcclosure(function(...)
+            if checkcaller() then return oldRandom(...) end
+            local mult, isSpreadPattern = applySpread(...)
+            if mult ~= nil then
+                local args = { ... }
+                if isSpreadPattern then
+                    return oldRandom(...) * mult
+                else
+                    if #args == 0 then return oldRandom() * mult end
+                    if #args == 1 then return oldRandom(args[1]) * mult end
+                    if #args == 2 then
+                        local res    = oldRandom(args[1], args[2])
+                        local center = (args[1] + args[2]) / 2
+                        return center + (res - center) * mult
+                    end
+                end
+            end
+            return oldRandom(...)
+        end))
+        onCleanup(function() pcall(function() hookfunction(math.random, oldRandom) end) end)
+    else
+        pcall(function()
+            local m = math
+            setreadonly(m, false)
+            local oldRandom = m.random
+            m.random = newcclosure(function(...)
+                if checkcaller and checkcaller() then return oldRandom(...) end
+                local mult, isSpreadPattern = applySpread(...)
+                if mult ~= nil then
+                    local args = { ... }
+                    if isSpreadPattern then
+                        return oldRandom(...) * mult
+                    else
+                        if #args == 0 then return oldRandom() * mult end
+                        if #args == 1 then return oldRandom(args[1]) * mult end
+                        if #args == 2 then
+                            local res    = oldRandom(args[1], args[2])
+                            local center = (args[1] + args[2]) / 2
+                            return center + (res - center) * mult
+                        end
+                    end
+                end
+                return oldRandom(...)
+            end)
+            onCleanup(function()
+                pcall(function()
+                    setreadonly(m, false)
+                    m.random = oldRandom
+                    setreadonly(m, true)
+                end)
+            end)
+        end)
+    end
+end
+
+do
+    local IR           = shared.vanity['Character']['Rage']['Infinite Range']
+    local TARGET_PLACE = 75947843575468
+
+    if IR['Enabled'] and game.PlaceId == TARGET_PLACE then
+
+        local modifiedBullets = {}
+
+        local function modifyBulletForInfiniteRange(bullet)
+            if modifiedBullets[bullet] then return end
+            modifiedBullets[bullet] = true
+            if bullet:IsA('BasePart') then
+                local bv = bullet:FindFirstChild('BodyVelocity')
+                if bv then
+                    bv.Velocity = bullet.CFrame.LookVector * 5000
+                    bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                else
+                    bv = Instance.new('BodyVelocity')
+                    bv.Velocity = bullet.CFrame.LookVector * 5000
+                    bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                    bv.Parent   = bullet
+                end
+                local lastTPPos        = bullet.Position
+                local distanceTraveled = 0
+                local TP_DISTANCE      = 30
+                local bConn = RunService.Heartbeat:Connect(function()
+                    if not isAlive() then return end
+                    if not bullet or not bullet.Parent then return end
+                    if not IR['Enabled'] then return end
+                    local cur = bullet.Position
+                    distanceTraveled = distanceTraveled + (cur - lastTPPos).Magnitude
+                    lastTPPos = cur
+                    if distanceTraveled >= TP_DISTANCE then
+                        bullet.CFrame    = bullet.CFrame + (bullet.CFrame.LookVector * 0.5)
+                        distanceTraveled = 0
+                    end
+                end)
+                onCleanup(function() pcall(function() bConn:Disconnect() end) end)
+            end
+        end
+
+        local scanConn = RunService.Heartbeat:Connect(function()
+            if not isAlive() then return end
+            if not IR['Enabled'] then return end
+            for _, part in pairs(workspace:GetChildren()) do
+                if part:IsA('BasePart') and part.Name:lower():find('bullet') then
+                    modifyBulletForInfiniteRange(part)
+                end
+            end
+            local bulletsFolder = workspace:FindFirstChild('Bullets')
+            if bulletsFolder then
+                for _, bullet in pairs(bulletsFolder:GetChildren()) do
+                    modifyBulletForInfiniteRange(bullet)
+                end
+            end
+        end)
+        onCleanup(function() pcall(function() scanConn:Disconnect() end) end)
+
+        pcall(function()
+            local RS               = game:GetService('ReplicatedStorage')
+            local MainEvent        = RS:WaitForChild('MainEvent', 5)
+            local GunHandlerModule = RS:FindFirstChild('Modules')
+                                     and RS.Modules:FindFirstChild('GunHandler')
+
+            if MainEvent and hookmetamethod then
+                local oldNc
+                oldNc = hookmetamethod(game, '__namecall', newcclosure(function(self, ...)
+                    local method = getnamecallmethod()
+                    local args   = { ... }
+                    if IR['Enabled'] and self == MainEvent and method == 'FireServer' then
+                        local eventName = tostring(args[1])
+                        if eventName == 'ShootGun' or eventName == 'Shoot'
+                            or eventName == 'DoubleBarrel' or eventName == 'Double-Barrel'
+                            or eventName == 'Shotgun' then
+                            local hitPos    = args[3]
+                            local muzzlePos = args[6]
+                            if typeof(hitPos) ~= 'Vector3' and typeof(args[2]) == 'Vector3' then
+                                hitPos = args[2]
+                            end
+                            if typeof(hitPos) == 'Vector3' and typeof(muzzlePos) == 'Vector3' then
+                                local distance = (hitPos - muzzlePos).Magnitude
+                                if distance > 15 then
+                                    local direction  = (hitPos - muzzlePos).Unit
+                                    local fakeHitPos = muzzlePos + (direction * IR['Bypass Pos'])
+                                    if typeof(args[3]) == 'Vector3' then args[3] = fakeHitPos end
+                                    if typeof(args[5]) == 'Vector3' then args[5] = fakeHitPos end
+                                    if typeof(args[2]) == 'Vector3' and args[2] == hitPos then
+                                        args[2] = fakeHitPos
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    return oldNc(self, unpack(args))
+                end))
+            end
+
+            if GunHandlerModule and hookfunction then
+                local GunHandler = require(GunHandlerModule)
+                if GunHandler.getAim then
+                    local oldGetAim
+                    oldGetAim = hookfunction(GunHandler.getAim, function(hit, dist)
+                        return oldGetAim(hit, IR['Enabled'] and IR['Range'] or dist)
+                    end)
+                end
+                if GunHandler.shoot then
+                    local oldShoot
+                    oldShoot = hookfunction(GunHandler.shoot, function(data)
+                        if IR['Enabled'] and typeof(data) == 'table' then
+                            data.Range = IR['Range']
+                        end
+                        return oldShoot(data)
+                    end)
+                end
+            end
+        end)
+    end
+end
+
+local function setupCharacter(char)
+    if not char then return end
+    local hum = char:FindFirstChildOfClass('Humanoid')
+    if not hum then return end
+    local defaultJP = hum.JumpPower
+
+    hum:GetPropertyChangedSignal('JumpPower'):Connect(function()
+        local MOV = shared.vanity['Character']['Movement']
+        if not MOV['No Jump Cooldown'] then return end
+        if hum.JumpPower == 0 then
+            local JP = MOV['Jump Power']
+            if JP['Enabled'] and MOV_JumpActive and not JP['Spiderman Mode'] then
+                local key  = getMovKey(char)
+                local mult = JP[key] and JP[key]['Multiplier'] or 1
+                hum.JumpPower = mult * 100
+            else
+                hum.JumpPower = defaultJP
+            end
+        end
+    end)
+
+    hum.StateChanged:Connect(function(_, newState)
+        if not shared.vanity['Character']['Movement']['Anti Fall'] then return end
+        if newState == Enum.HumanoidStateType.FallingDown
+            or newState == Enum.HumanoidStateType.Ragdoll then
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+    end)
+
+    local wallParams = RaycastParams.new()
+    wallParams.FilterType = Enum.RaycastFilterType.Exclude
+    wallParams.FilterDescendantsInstances = { char }
+
+    local function isNearWall(hrp)
+        local cf = hrp.CFrame
+        for _, dir in ipairs({ cf.LookVector, -cf.LookVector, cf.RightVector, -cf.RightVector }) do
+            if workspace:Raycast(hrp.Position, dir * 3, wallParams) then return true end
+        end
+        return false
+    end
+
+    local freefallStart = 0
+    hum.StateChanged:Connect(function(_, newState)
+        if newState == Enum.HumanoidStateType.Freefall then
+            freefallStart = tick()
+        elseif newState == Enum.HumanoidStateType.Landed
+            or newState == Enum.HumanoidStateType.Running then
+            freefallStart = 0
+        end
+    end)
+
+    UserInputService.JumpRequest:Connect(function()
+        local JP = shared.vanity['Character']['Movement']['Jump Power']
+        if not JP['Enabled'] or not MOV_JumpActive or not JP['Spiderman Mode'] then return end
+        local hrp = char:FindFirstChild('HumanoidRootPart')
+        if not hrp then return end
+        if hum:GetState() ~= Enum.HumanoidStateType.Freefall then return end
+        if freefallStart == 0 or (tick() - freefallStart) < 0.2 then return end
+        if not isNearWall(hrp) then return end
+        local key  = getMovKey(char)
+        local mult = JP[key] and JP[key]['Multiplier'] or 1
+        hum.JumpPower = mult * 100
+        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        local resetConn
+        resetConn = hum.StateChanged:Connect(function(_, ns)
+            if ns == Enum.HumanoidStateType.Freefall or ns == Enum.HumanoidStateType.Landed then
+                resetConn:Disconnect()
+                hum.JumpPower = defaultJP
+            end
+        end)
+    end)
+end
+
+local charConn = LocalPlayer.CharacterAdded:Connect(function(char)
+    MOV_SpeedActive = false
+    setupCharacter(char)
+end)
+onCleanup(function() pcall(function() charConn:Disconnect() end) end)
+if LocalPlayer.Character then setupCharacter(LocalPlayer.Character) end
+
+-- ============================================================
+-- Utilities
+-- ============================================================
+
+-- Skin Changer
+do
+    local SC = shared.vanity['Character']['Utilities']['Skin Changer']
+    if SC and SC['Enabled'] then
+        local RS           = game:GetService('ReplicatedStorage')
+        local SkinAssets   = RS:FindFirstChild('SkinAssets')
+        local SkinModules  = RS:FindFirstChild('SkinModules')
+        local AppliedSkins = {}
+
+        local function ApplySkin(Tool, SkinName)
+            if not SkinName or SkinName == '' then return end
+            local skinAsset = SkinAssets and SkinAssets:FindFirstChild(SkinName)
+            if not skinAsset then return end
+            local Default = Tool:FindFirstChild('Default')
+            if not Default then return end
+            local Mesh = Default:FindFirstChild('Mesh')
+            if not Mesh then return end
+            for _, child in next, Mesh:GetChildren() do
+                if child:IsA('SpecialMesh') or child:IsA('FileMesh') then
+                    pcall(function() child.TextureId = skinAsset:GetAttribute('TextureId') or '' end)
+                end
+            end
+            local Handle = Tool:FindFirstChild('Handle')
+            if Handle then
+                local hMesh = Handle:FindFirstChildOfClass('SpecialMesh') or Handle:FindFirstChildOfClass('FileMesh')
+                if hMesh and skinAsset:GetAttribute('TextureId') then
+                    pcall(function() hMesh.TextureId = skinAsset:GetAttribute('TextureId') end)
+                end
+            end
+            AppliedSkins[Tool] = SkinName
+        end
+
+        local function ProcessTool(Tool)
+            if not Tool:IsA('Tool') then return end
+            local Skins = SC['Skins']
+            local SkinName = Skins[Tool.Name]
+            if SkinName and SkinName ~= '' then
+                ApplySkin(Tool, SkinName)
+            end
+        end
+
+        local function ProcessCharacter(Character)
+            for _, child in next, Character:GetChildren() do
+                ProcessTool(child)
+            end
+            Character.ChildAdded:Connect(ProcessTool)
+        end
+
+        local function ProcessBackpack(Backpack)
+            for _, child in next, Backpack:GetChildren() do
+                ProcessTool(child)
+            end
+            Backpack.ChildAdded:Connect(ProcessTool)
+        end
+
+        if LocalPlayer.Character then
+            ProcessCharacter(LocalPlayer.Character)
+            local bp = LocalPlayer:FindFirstChildOfClass('Backpack')
+            if bp then ProcessBackpack(bp) end
+        end
+
+        local scCharConn = LocalPlayer.CharacterAdded:Connect(function(char)
+            task.wait(0.5)
+            ProcessCharacter(char)
+            local bp = LocalPlayer:WaitForChild('Backpack', 5)
+            if bp then ProcessBackpack(bp) end
+        end)
+        onCleanup(function() pcall(function() scCharConn:Disconnect() end) end)
+    end
+end
+
+-- Anti Stomp
+do
+    local KOConnection = nil
+    local function SetupAntiStomp(Character)
+        if KOConnection then KOConnection:Disconnect(); KOConnection = nil end
+        local BodyEffects = Character:WaitForChild('BodyEffects', 5)
+        if not BodyEffects then return end
+        local KO = BodyEffects:WaitForChild('K.O', 5)
+        if not KO then return end
+        KOConnection = KO.Changed:Connect(function(Knocked)
+            local cfg = shared.vanity['Character']['Utilities']['Anti Stomp']
+            if not cfg or not cfg['Enabled'] then return end
+            if not Knocked then return end
+            local HRP = Character:FindFirstChild('HumanoidRootPart')
+            if not HRP then return end
+            HRP.CFrame    = CFrame.new(0, -2147483647, 0)
+            HRP.Velocity  = Vector3.new(65536, 65534, 65536)
+            local Humanoid = Character:FindFirstChildOfClass('Humanoid')
+            if Humanoid then
+                for _ = 1, 10 do
+                    Humanoid.Health = 0
+                    task.wait()
+                end
+            end
+        end)
+    end
+    local antiStompCharConn = LocalPlayer.CharacterAdded:Connect(SetupAntiStomp)
+    onCleanup(function() pcall(function() antiStompCharConn:Disconnect() end) end)
+    if LocalPlayer.Character then
+        task.spawn(SetupAntiStomp, LocalPlayer.Character)
+    end
+end
+
+-- Purchase Armor
+do
+    local ArmorBuying = false
+    local armorConn = UserInputService.InputBegan:Connect(function(Input, GameProcessed)
+        if GameProcessed then return end
+        local cfg = shared.vanity['Character']['Utilities']['Purchase Armor']
+        if not cfg or not cfg['Enabled'] then return end
+        local ArmorKey = shared.vanity['Keybinds']['Purchase Armor']
+        if not ArmorKey then return end
+        local match = false
+        pcall(function()
+            if Input.KeyCode == Enum.KeyCode[ArmorKey:upper()] then match = true end
+        end)
+        if not match then return end
+        if ArmorBuying then return end
+        local Character = LocalPlayer.Character
+        if not Character then return end
+        local HRP = Character:FindFirstChild('HumanoidRootPart')
+        if not HRP then return end
+        local Ignored = workspace:FindFirstChild('Ignored')
+        if not Ignored then return end
+        local Shop = Ignored:FindFirstChild('Shop')
+        if not Shop then return end
+        local ArmorShop  = nil
+        local LowestPrice = math.huge
+        for _, ShopPart in next, Shop:GetChildren() do
+            local itemName = string.lower(ShopPart.Name)
+            if string.find(itemName, 'armor') then
+                local priceStr = string.match(itemName, '%$(%d+)')
+                local price    = priceStr and tonumber(priceStr) or math.huge
+                if price < LowestPrice then
+                    local Head     = ShopPart:FindFirstChild('Head')
+                    local Detector = ShopPart:FindFirstChildOfClass('ClickDetector')
+                    if Head and Detector then
+                        ArmorShop  = { Head = Head, Detector = Detector }
+                        LowestPrice = price
+                    end
+                end
+            end
+        end
+        if not ArmorShop then return end
+        ArmorBuying = true
+        task.spawn(function()
+            local ShopPos = ArmorShop.Head.Position - Vector3.new(0, 8.8, 0)
+            local Detector = ArmorShop.Detector
+            for _ = 1, 60 do
+                if not HRP or not HRP.Parent then break end
+                fireclickdetector(Detector)
+                local OldCF = HRP.CFrame
+                HRP.CFrame  = CFrame.new(ShopPos)
+                RunService.RenderStepped:Wait()
+                HRP.CFrame  = OldCF
+                RunService.Heartbeat:Wait()
+            end
+            ArmorBuying = false
+        end)
+    end)
+    onCleanup(function() pcall(function() armorConn:Disconnect() end) end)
+end
+
+-- Inventory Sorter
+do
+    local SorterActive = false
+    local sorterConn = UserInputService.InputBegan:Connect(function(Input, GameProcessed)
+        if GameProcessed then return end
+        local cfg = shared.vanity['Character']['Utilities']['Inventory Sorter']
+        if not cfg or not cfg['Enabled'] then return end
+        local SorterKey = shared.vanity['Keybinds']['Inventory Sorter']
+        if not SorterKey then return end
+        local match = false
+        pcall(function()
+            if Input.KeyCode == Enum.KeyCode[SorterKey:upper()] then match = true end
+        end)
+        if not match then return end
+        if SorterActive then return end
+        task.spawn(function()
+            SorterActive = true
+            local Character = LocalPlayer.Character
+            if not Character then SorterActive = false; return end
+            local Backpack = LocalPlayer:FindFirstChildOfClass('Backpack')
+            if not Backpack then SorterActive = false; return end
+
+            local GunOrder = cfg['Order']
+            local OrderV   = 10 - #GunOrder
+
+            -- Move all tools to a temp folder to reset slot order
+            local FakeFolder = Instance.new('Folder')
+            FakeFolder.Name   = 'SorterTemp'
+            FakeFolder.Parent = workspace
+            for _, v in next, Backpack:GetChildren() do
+                if v:IsA('Tool') then
+                    v.Parent = FakeFolder
+                end
+            end
+
+            -- Return weapons in the desired order
+            for _, Name in next, GunOrder do
+                local Gun = FakeFolder:FindFirstChild(Name)
+                if Gun then
+                    Gun.Parent = Backpack
+                    task.wait(0.05)
+                else
+                    OrderV = OrderV + 1
+                end
+            end
+
+            -- Return consumables first (they go to the back)
+            for _, v in next, FakeFolder:GetChildren() do
+                if v:FindFirstChild('Drink') or v:FindFirstChild('Eat') then
+                    v.Parent = Backpack
+                    OrderV   = OrderV - 1
+                end
+            end
+
+            -- Insert placeholders to push remaining weapons into correct slots
+            if OrderV > 0 then
+                for _ = 1, OrderV do
+                    local PlaceHolder = Instance.new('Tool')
+                    PlaceHolder.Name           = ''
+                    PlaceHolder.ToolTip        = 'PlaceHolder'
+                    PlaceHolder.GripPos        = Vector3.new(0, 1, 0)
+                    PlaceHolder.RequiresHandle = false
+                    PlaceHolder.Parent         = Backpack
+                end
+            end
+
+            -- Return any remaining tools
+            for _, v in next, FakeFolder:GetChildren() do
+                if v:IsA('Tool') then
+                    v.Parent = Backpack
+                end
+            end
+
+            -- Clean up placeholders
+            for _, v in next, Backpack:GetChildren() do
+                if v.Name == '' then v:Destroy() end
+            end
+
+            FakeFolder:Destroy()
+            task.wait(0.5)
+            SorterActive = false
+        end)
+    end)
+    onCleanup(function() pcall(function() sorterConn:Disconnect() end) end)
+end
