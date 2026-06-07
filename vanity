@@ -1,3 +1,14 @@
+-- Vanity Key Guard
+do
+    local ok, lp = pcall(function() return game:GetService('Players').LocalPlayer end)
+    local key = rawget(shared, 'script_key') or rawget(_G, 'script_key') or ''
+    if key == '' then
+        if ok and lp then lp:Kick('[Vanity] No key found. Set script_key before running the loadstring.') end
+        return
+    end
+    rawset(shared, 'script_key', key)
+end
+
 local Players          = game:GetService('Players')
 local RunService       = game:GetService('RunService')
 local UserInputService = game:GetService('UserInputService')
