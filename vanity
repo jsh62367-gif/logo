@@ -1,9 +1,13 @@
 -- Vanity Key Guard
 do
-    local ok, lp = pcall(function() return game:GetService('Players').LocalPlayer end)
-    local key = rawget(shared, 'script_key') or rawget(_G, 'script_key') or ''
+    local lp = game:GetService('Players').LocalPlayer
+    local key = ''
+    pcall(function() key = tostring(rawget(_G, 'script_key') or '') end)
+    if key == '' then pcall(function() key = tostring(rawget(shared, 'script_key') or '') end) end
+    if key == '' then pcall(function() key = tostring(getfenv(0).script_key or '') end) end
+    if key == '' then pcall(function() key = tostring(script_key or '') end) end
     if key == '' then
-        if ok and lp then lp:Kick('[Vanity] No key found. Set script_key before running the loadstring.') end
+        lp:Kick('[Vanity] No key found. Set script_key before running the loadstring.')
         return
     end
     rawset(shared, 'script_key', key)
@@ -54,6 +58,8 @@ local TB_State        = false
 local TB_Target       = nil
 local TB_Locked       = false
 local TB_LastShot     = 0
+
+local RF_MouseDown    = false  -- rapid fire: true while LMB held
 
 local TargetLineOutline = Drawing.new('Line')
 TargetLineOutline.Visible     = false
@@ -779,6 +785,18 @@ local inputConn = UserInputService.InputBegan:Connect(function(input, processed)
             end
         end
     end
+    -- Rapid Fire toggle
+    local rfKey = binds['Rapid Fire Toggle']
+    if rfKey then
+        local ok, kc = pcall(function() return Enum.KeyCode[rfKey:upper()] end)
+        if ok and kc and input.KeyCode == kc then
+            shared.vanity['Character']['Rage']['Rapid Fire']['Enabled'] = not shared.vanity['Character']['Rage']['Rapid Fire']['Enabled']
+        end
+    end
+    -- Track LMB for Rapid Fire
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        RF_MouseDown = true
+    end
 end)
 onCleanup(function() pcall(function() inputConn:Disconnect() end) end)
 
@@ -807,8 +825,35 @@ local inputEndConn = UserInputService.InputEnded:Connect(function(input, process
             end
         end
     end
+    -- Release LMB for Rapid Fire
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        RF_MouseDown = false
+    end
 end)
 onCleanup(function() pcall(function() inputEndConn:Disconnect() end) end)
+
+-- Rapid Fire loop (from axiom.lua)
+task.spawn(function()
+    while isAlive() do
+        local RF = shared.vanity['Character']['Rage']['Rapid Fire']
+        if RF['Enabled'] and RF_MouseDown then
+            local char = game:GetService('Players').LocalPlayer.Character
+            local tool = char and char:FindFirstChildOfClass('Tool')
+            if tool then
+                local cd = RF['Amount'] or 0
+                if RF['Weapons'] and RF['Weapons'][tool.Name] ~= nil then
+                    cd = RF['Weapons'][tool.Name]
+                end
+                pcall(function() tool:Activate() end)
+                if cd > 0 then task.wait(cd) else task.wait() end
+            else
+                task.wait()
+            end
+        else
+            task.wait()
+        end
+    end
+end)
 
 local mainConn = RunService.RenderStepped:Connect(function()
     if not isAlive() then return end
