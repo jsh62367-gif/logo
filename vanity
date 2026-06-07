@@ -1080,7 +1080,11 @@ local mainConn = RunService.RenderStepped:Connect(function()
     local featureColor = rgb(PColors['Feature Color'])
     local activeColor  = rgb(PColors['Active Color'])
 
-    PanelTitle.Text     = string.format('<font color="%s">%s</font>', titleColor, PanelCfg['Title'])
+    local gameTitle = PanelCfg['Title']
+    if game.PlaceId == 75947843575468 then gameTitle = 'Das Hood'
+    elseif game.PlaceId == 103176029075121 then gameTitle = 'Da Hood'
+    end
+    PanelTitle.Text = string.format('<font color="%s">%s</font>', titleColor, gameTitle)
     PanelTitle.Position = Vector2.new(BaseX, BaseY)
     PanelTitle.Size     = 17
     PanelTitle.Visible  = true
