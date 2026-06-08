@@ -1080,12 +1080,12 @@ local mainConn = RunService.RenderStepped:Connect(function()
     local featureColor = rgb(PColors['Feature Color'])
     local activeColor  = rgb(PColors['Active Color'])
 
-    -- Title: muted purple/magenta
-    PanelTitle.Text     = string.format('<font color="rgb(160,0,200)"><b>%s</b></font>', PanelCfg['Title'])
+    -- Title: same rendering style as feature rows, just purple tint
+    PanelTitle.Text     = string.format('<font color="rgb(160,0,200)">%s</font>', PanelCfg['Title'])
     PanelTitle.Position = Vector2.new(BaseX, BaseY)
     PanelTitle.Size     = 20
     PanelTitle.Outline  = true
-    PanelTitle.OutlineColor = Color3.fromRGB(80, 0, 120)
+    PanelTitle.OutlineColor = Color3.fromRGB(0, 0, 0)
     PanelTitle.Visible  = true
 
     local OffsetY  = BaseY + 26
