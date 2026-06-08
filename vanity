@@ -1097,7 +1097,7 @@ local mainConn = RunService.RenderStepped:Connect(function()
         rowIndex = rowIndex + 1
         local L = PanelRows[rowIndex]
         if not L then return end
-        L.Text     = string.format('<font color="rgb(230,230,230)">%s: true</font>', label)
+        L.Text     = string.format('<font color="%s">%s: true</font>', activeColor, label)
         L.Color    = Color3.new(1, 1, 1)
         L.Size     = 14
         L.Outline  = true
