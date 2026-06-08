@@ -1080,40 +1080,41 @@ local mainConn = RunService.RenderStepped:Connect(function()
     local featureColor = rgb(PColors['Feature Color'])
     local activeColor  = rgb(PColors['Active Color'])
 
-    PanelTitle.Text     = string.format('<font color="%s">%s</font>', titleColor, PanelCfg['Title'])
+    -- Title: bright magenta/purple with glow effect matching the prada.wtf style
+    PanelTitle.Text     = string.format('<font color="rgb(220,0,255)"><b>%s</b></font>', PanelCfg['Title'])
     PanelTitle.Position = Vector2.new(BaseX, BaseY)
-    PanelTitle.Size     = 17
+    PanelTitle.Size     = 20
+    PanelTitle.Outline  = true
+    PanelTitle.OutlineColor = Color3.fromRGB(180, 0, 255)
     PanelTitle.Visible  = true
 
-    local OffsetY  = BaseY + 22
+    local OffsetY  = BaseY + 26
     local rowIndex = 0
 
-    local function Row(label, isOn, targetName)
+    -- Only add a row if the feature is ON (no off rows shown)
+    local function Row(label, isOn)
+        if not isOn then return end
         rowIndex = rowIndex + 1
         local L = PanelRows[rowIndex]
         if not L then return end
-        local valueStr
-        if isOn and targetName then
-            valueStr = string.format('<font color="%s">%s: %s</font>', activeColor, label, targetName)
-        elseif isOn then
-            valueStr = string.format('<font color="%s">%s: on</font>', featureColor, label)
-        else
-            valueStr = string.format('<font color="rgb(160,160,160)">%s: off</font>', label)
-        end
-        L.Text     = valueStr
+        L.Text     = string.format('<font color="rgb(230,230,230)">%s: true</font>', label)
         L.Color    = Color3.new(1, 1, 1)
+        L.Size     = 14
+        L.Outline  = true
+        L.OutlineColor = Color3.fromRGB(0, 0, 0)
         L.Position = Vector2.new(BaseX, OffsetY)
         L.Visible  = true
-        OffsetY    = OffsetY + 17
+        OffsetY    = OffsetY + 18
     end
 
     local saOn = shared.vanity['Silent Aim']['Enabled']
-    Row('silent', saOn, saOn and (SA_Target and SA_Target.DisplayName or nil) or nil)
-    Row('speed',  MOV_SpeedActive, nil)
     local aaOn = shared.vanity['Aim Assist']['Enabled'] and AA_Locked
-    Row('assist', aaOn, aaOn and (AA_Target and AA_Target.DisplayName or nil) or nil)
     local tbOn = shared.vanity['Triggerbot']['Enabled'] and TB_State
-    Row('trigger', tbOn, tbOn and (TB_Target and TB_Target.DisplayName or nil) or nil)
+
+    Row('silent',  saOn)
+    Row('speed',   MOV_SpeedActive)
+    Row('assist',  aaOn)
+    Row('trigger', tbOn)
 
     for i = rowIndex + 1, #PanelRows do
         PanelRows[i].Visible = false
