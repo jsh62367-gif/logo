@@ -1,10 +1,4 @@
-
-
-
-        if not Player.Parent then
-            Draw:Remove()
-            NameESPDrawings[Player] = nil
-        end-- Vanity Key Guard
+-- Vanity Key Guard
 do
     local lp = game:GetService('Players').LocalPlayer
     local key = ''
@@ -242,9 +236,8 @@ local NameESPDrawings = {}
 
 local function CleanNameESP()
     for Player, Draw in next, NameESPDrawings do
-        local ok, hasParent = pcall(function() return Player and Player.Parent ~= nil end)
-        if not ok or not hasParent then
-            pcall(function() Draw:Remove() end)
+        if not Player.Parent then
+            Draw:Remove()
             NameESPDrawings[Player] = nil
         end
     end
@@ -1543,7 +1536,7 @@ end
 
 local charConn = LocalPlayer.CharacterAdded:Connect(function(char)
     MOV_SpeedActive = false
-    task.spawn(setupCharacter, char)
+    setupCharacter(char)
 end)
 onCleanup(function() pcall(function() charConn:Disconnect() end) end)
 if LocalPlayer.Character then setupCharacter(LocalPlayer.Character) end
@@ -1627,7 +1620,6 @@ end
 do
     local KOConnection = nil
     local function SetupAntiStomp(Character)
-        task.spawn(function()
         if KOConnection then KOConnection:Disconnect(); KOConnection = nil end
         local BodyEffects = Character:WaitForChild('BodyEffects', 5)
         if not BodyEffects then return end
@@ -1649,7 +1641,6 @@ do
                 end
             end
         end)
-        end) -- end task.spawn
     end
     local antiStompCharConn = LocalPlayer.CharacterAdded:Connect(SetupAntiStomp)
     onCleanup(function() pcall(function() antiStompCharConn:Disconnect() end) end)
