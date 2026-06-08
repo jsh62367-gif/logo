@@ -1,7 +1,4 @@
-
-
-
-        if not Player.Parent then
+if not Player.Parent then
             Draw:Remove()
             NameESPDrawings[Player] = nil
         end-- Vanity Key Guard
