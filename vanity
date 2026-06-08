@@ -1,4 +1,7 @@
-if not Player.Parent then
+
+
+
+        if not Player.Parent then
             Draw:Remove()
             NameESPDrawings[Player] = nil
         end-- Vanity Key Guard
@@ -239,6 +242,11 @@ local NameESPDrawings = {}
 
 local function CleanNameESP()
     for Player, Draw in next, NameESPDrawings do
+        local ok, hasParent = pcall(function() return Player and Player.Parent ~= nil end)
+        if not ok or not hasParent then
+            pcall(function() Draw:Remove() end)
+            NameESPDrawings[Player] = nil
+        end
     end
 end
 
