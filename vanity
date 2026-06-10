@@ -551,13 +551,20 @@ RawMeta.__index = newcclosure(function(self, key)
     if not checkcaller() then
         local SA = shared.vanity['Silent Aim']
         if SA['Enabled'] and SA_TargetPart and SA_TargetPos then
-            if self == Mouse and (key == 'Hit' or key == 'Target') then
+            -- bail out immediately if the target part no longer exists
+            if not SA_TargetPart.Parent then
+                SA_TargetPart = nil; SA_TargetPos = nil
+            elseif self == Mouse and (key == 'Hit' or key == 'Target') then
                 local pred = SA['Prediction']
-                local vel  = SA_TargetPart.AssemblyLinearVelocity or SA_TargetPart.Velocity
                 local pos  = SA_TargetPos
                 if pred['Enabled'] then
-                    local v = pred['Values']
-                    pos = pos + Vector3.new(vel.X * v['X'], vel.Y * v['Y'], vel.Z * v['Z'])
+                    local ok, vel = pcall(function()
+                        return SA_TargetPart.AssemblyLinearVelocity
+                    end)
+                    if ok and vel then
+                        local v = pred['Values']
+                        pos = pos + Vector3.new(vel.X * v['X'], vel.Y * v['Y'], vel.Z * v['Z'])
+                    end
                 end
                 if key == 'Hit'    then return CFrame.new(pos) end
                 if key == 'Target' then return SA_TargetPart end
@@ -569,24 +576,33 @@ end)
 
 RawMeta.__namecall = newcclosure(function(self, ...)
     local method = getnamecallmethod()
-    local args   = { ... }
     if not checkcaller() then
         local SA = shared.vanity['Silent Aim']
         if SA['Enabled'] and SA_TargetPart and SA_TargetPos then
-            local pred = SA['Prediction']
-            local vel  = SA_TargetPart.AssemblyLinearVelocity or SA_TargetPart.Velocity
-            local pos  = SA_TargetPos
-            if pred['Enabled'] then
-                local v = pred['Values']
-                pos = pos + Vector3.new(vel.X * v['X'], vel.Y * v['Y'], vel.Z * v['Z'])
-            end
-            if method == 'FindPartOnRayWithIgnoreList'
+            -- bail out immediately if the target part no longer exists
+            if not SA_TargetPart.Parent then
+                SA_TargetPart = nil; SA_TargetPos = nil
+            elseif method == 'FindPartOnRayWithIgnoreList'
                 or method == 'FindPartOnRayWithWhitelist'
-                or method == 'FindPartOnRay' then
-                args[1] = Ray.new(Camera.CFrame.Position, (pos - Camera.CFrame.Position).Unit * 1000)
-                return oldNamecall(self, unpack(args))
-            elseif method == 'Raycast' then
-                args[2] = (pos - args[1]).Unit * 1000
+                or method == 'FindPartOnRay'
+                or method == 'Raycast' then
+                local pred = SA['Prediction']
+                local pos  = SA_TargetPos
+                if pred['Enabled'] then
+                    local ok, vel = pcall(function()
+                        return SA_TargetPart.AssemblyLinearVelocity
+                    end)
+                    if ok and vel then
+                        local v = pred['Values']
+                        pos = pos + Vector3.new(vel.X * v['X'], vel.Y * v['Y'], vel.Z * v['Z'])
+                    end
+                end
+                local args = { ... }
+                if method == 'Raycast' then
+                    args[2] = (pos - args[1]).Unit * 1000
+                else
+                    args[1] = Ray.new(Camera.CFrame.Position, (pos - Camera.CFrame.Position).Unit * 1000)
+                end
                 return oldNamecall(self, unpack(args))
             end
         end
@@ -631,168 +647,117 @@ end
 
 local inputConn = UserInputService.InputBegan:Connect(function(input, processed)
     if processed then return end
-    local binds      = shared.vanity['Keybinds']
-    local multibinds = shared.vanity['Multibinds']
-    local handledByMulti = {}
+    local binds = shared.vanity['Keybinds']
 
-    for _, group in ipairs(multibinds) do
-        if not group['Enabled'] then continue end
-        local key = group['Key']
-        if not key then continue end
-        local matched = false
-        pcall(function() matched = input.KeyCode == Enum.KeyCode[key:upper()] end)
-        if not matched then continue end
+    -- ── Auto-Multibind ───────────────────────────────────────────────────────
+    -- Build key→features map. If 2+ features share a key, fire them together.
+    local featureKeyMap = {
+        ['Walk Speed']  = binds['Walk Speed Toggle'],
+        ['Jump Power']  = binds['Jump Power Toggle'],
+        ['ESP']         = binds['ESP Toggle'],
+        ['Silent Aim']  = binds['Silent Aim Toggle'],
+        ['Aim Assist']  = binds['Aim Assist Toggle'],
+        ['Triggerbot']  = binds['Triggerbot Toggle'],
+        ['Rapid Fire']  = binds['Rapid Fire Toggle'],
+    }
 
-        local allOn = true
-        for _, feat in ipairs(group['Features']) do
-            if feat == 'Silent Aim'  then if not shared.vanity['Silent Aim']['Enabled'] then allOn = false end
-            elseif feat == 'Aim Assist'  then if not AA_Locked then allOn = false end
-            elseif feat == 'Triggerbot'  then if not TB_State  then allOn = false end
-            elseif feat == 'ESP'         then if not shared.vanity['Name ESP']['Enabled'] then allOn = false end
-            elseif feat == 'Walk Speed'  then if not MOV_SpeedActive then allOn = false end
-            elseif feat == 'Jump Power'  then if not MOV_JumpActive  then allOn = false end
-            end
+    local keyFeatureMap = {}
+    for feat, key in pairs(featureKeyMap) do
+        if key then
+            local k = key:upper()
+            if not keyFeatureMap[k] then keyFeatureMap[k] = {} end
+            table.insert(keyFeatureMap[k], feat)
         end
+    end
 
-        local turnOn = not allOn
+    local function getFeatureState(feat)
+        if feat == 'Silent Aim'  then return shared.vanity['Silent Aim']['Enabled']
+        elseif feat == 'Aim Assist'  then return AA_Locked
+        elseif feat == 'Triggerbot'  then return TB_State
+        elseif feat == 'ESP'         then return shared.vanity['Name ESP']['Enabled']
+        elseif feat == 'Walk Speed'  then return MOV_SpeedActive
+        elseif feat == 'Jump Power'  then return MOV_JumpActive
+        elseif feat == 'Rapid Fire'  then return shared.vanity['Character']['Rage']['Rapid Fire']['Enabled']
+        end
+        return false
+    end
 
-        for _, feat in ipairs(group['Features']) do
-            local featureKey = nil
-            if     feat == 'Silent Aim'  then featureKey = binds['Silent Aim Toggle']
-            elseif feat == 'Aim Assist'  then featureKey = binds['Aim Assist Toggle']
-            elseif feat == 'Triggerbot'  then featureKey = binds['Triggerbot Toggle']
-            elseif feat == 'ESP'         then featureKey = binds['ESP Toggle']
-            elseif feat == 'Walk Speed'  then featureKey = binds['Walk Speed Toggle']
-            elseif feat == 'Jump Power'  then featureKey = binds['Jump Power Toggle']
+    local function toggleFeature(feat, turnOn)
+        if feat == 'Silent Aim' then
+            local SA = shared.vanity['Silent Aim']
+            SA['Enabled'] = turnOn
+            if SA['Mode'] == 'Target' then
+                if turnOn then SA_Target = SA_GetClosestPlayer()
+                else SA_Target = nil; SA_TargetPart = nil end
             end
-            if featureKey and featureKey:upper() == key:upper() then
-                handledByMulti[feat] = true
-            end
-
-            if feat == 'Silent Aim' then
-                local SA = shared.vanity['Silent Aim']
-                SA['Enabled'] = turnOn
-                if SA['Mode'] == 'Target' then
-                    if turnOn then SA_Target = SA_GetClosestPlayer()
-                    else SA_Target = nil; SA_TargetPart = nil end
-                end
-            elseif feat == 'Aim Assist' then
+        elseif feat == 'Aim Assist' then
+            local AA = shared.vanity['Aim Assist']
+            if AA['Mode'] == 'Hold' then
                 AA_Locked = turnOn
                 if turnOn then AA_Target = AA_GetClosestPlayer() else AA_Target = nil end
-            elseif feat == 'Triggerbot' then
+            else
+                AA_Locked = turnOn
+                if turnOn then AA_Target = AA_GetClosestPlayer() else AA_Target = nil end
+            end
+        elseif feat == 'Triggerbot' then
+            local TB = shared.vanity['Triggerbot']
+            if TB['Type'] == 'Hold' then
                 TB_State = turnOn
-                if turnOn then
-                    TB_Target = TB_GetClosestPlayer()
-                    TB_Locked = TB_Target ~= nil
+                if turnOn and TB['Selection'] == 'Target' then
+                    TB_Target = TB_GetClosestPlayer(); TB_Locked = TB_Target ~= nil
+                end
+            else
+                TB_State = turnOn
+                if turnOn and TB['Selection'] == 'Target' then
+                    TB_Target = TB_GetClosestPlayer(); TB_Locked = TB_Target ~= nil
                 else
                     TB_Target = nil; TB_Locked = false
                 end
-            elseif feat == 'ESP' then
-                shared.vanity['Name ESP']['Enabled'] = turnOn
-            elseif feat == 'Walk Speed' then
+            end
+        elseif feat == 'ESP' then
+            shared.vanity['Name ESP']['Enabled'] = turnOn
+        elseif feat == 'Walk Speed' then
+            if shared.vanity['Character']['Movement']['Walk Speed']['Enabled'] then
                 MOV_SpeedActive = turnOn
                 if not turnOn then
                     local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass('Humanoid')
                     if hum then hum.WalkSpeed = 16 end
                 end
-            elseif feat == 'Jump Power' then
+            end
+        elseif feat == 'Jump Power' then
+            if shared.vanity['Character']['Movement']['Jump Power']['Enabled'] then
                 MOV_JumpActive = turnOn
             end
+        elseif feat == 'Rapid Fire' then
+            shared.vanity['Character']['Rage']['Rapid Fire']['Enabled'] = turnOn
         end
     end
 
-    local wsKey = binds['Walk Speed Toggle']
-    if wsKey and not handledByMulti['Walk Speed'] then
-        local ok, kc = pcall(function() return Enum.KeyCode[wsKey:upper()] end)
-        if ok and kc and input.KeyCode == kc then
-            if shared.vanity['Character']['Movement']['Walk Speed']['Enabled'] then
-                MOV_SpeedActive = not MOV_SpeedActive
-                if not MOV_SpeedActive then
-                    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass('Humanoid')
-                    if hum then hum.WalkSpeed = 16 end
-                end
+    local handledKeys = {}
+
+    for keyStr, features in pairs(keyFeatureMap) do
+        local ok, kc = pcall(function() return Enum.KeyCode[keyStr] end)
+        if not ok or not kc or input.KeyCode ~= kc then continue end
+        if handledKeys[keyStr] then continue end
+        handledKeys[keyStr] = true
+
+        if #features >= 2 then
+            -- Shared key: toggle all features together
+            local allOn = true
+            for _, feat in ipairs(features) do
+                if not getFeatureState(feat) then allOn = false; break end
             end
-        end
-    end
-
-    local jpKey = binds['Jump Power Toggle']
-    if jpKey and not handledByMulti['Jump Power'] then
-        local ok, kc = pcall(function() return Enum.KeyCode[jpKey:upper()] end)
-        if ok and kc and input.KeyCode == kc then
-            if shared.vanity['Character']['Movement']['Jump Power']['Enabled'] then
-                MOV_JumpActive = not MOV_JumpActive
+            local turnOn = not allOn
+            for _, feat in ipairs(features) do
+                toggleFeature(feat, turnOn)
             end
+        else
+            -- Single feature: simple toggle
+            local feat = features[1]
+            toggleFeature(feat, not getFeatureState(feat))
         end
     end
 
-    local espKey = binds['ESP Toggle']
-    if espKey and not handledByMulti['ESP'] then
-        local ok, kc = pcall(function() return Enum.KeyCode[espKey:upper()] end)
-        if ok and kc and input.KeyCode == kc then
-            shared.vanity['Name ESP']['Enabled'] = not shared.vanity['Name ESP']['Enabled']
-        end
-    end
-
-    local saKey = binds['Silent Aim Toggle']
-    if saKey and not handledByMulti['Silent Aim'] then
-        local ok, kc = pcall(function() return Enum.KeyCode[saKey:upper()] end)
-        if ok and kc and input.KeyCode == kc then
-            local SA = shared.vanity['Silent Aim']
-            SA['Enabled'] = not SA['Enabled']
-            if SA['Mode'] == 'Target' then
-                if SA['Enabled'] then SA_Target = SA_GetClosestPlayer()
-                else SA_Target = nil; SA_TargetPart = nil end
-            end
-        end
-    end
-
-    local aaKey = binds['Aim Assist Toggle']
-    if aaKey and not handledByMulti['Aim Assist'] then
-        local ok, kc = pcall(function() return Enum.KeyCode[aaKey:upper()] end)
-        if ok and kc and input.KeyCode == kc then
-            local AA = shared.vanity['Aim Assist']
-            if AA['Mode'] == 'Hold' then
-                AA_Locked = true
-                AA_Target = AA_GetClosestPlayer()
-            else
-                AA_Locked = not AA_Locked
-                if AA_Locked then AA_Target = AA_GetClosestPlayer() else AA_Target = nil end
-            end
-        end
-    end
-
-    local tbKey = binds['Triggerbot Toggle']
-    if tbKey and not handledByMulti['Triggerbot'] then
-        local ok, kc = pcall(function() return Enum.KeyCode[tbKey:upper()] end)
-        if ok and kc and input.KeyCode == kc then
-            local TB = shared.vanity['Triggerbot']
-            if TB['Type'] == 'Hold' then
-                TB_State = true
-                if TB['Selection'] == 'Target' then
-                    TB_Target = TB_GetClosestPlayer()
-                    TB_Locked = TB_Target ~= nil
-                end
-            else
-                TB_State = not TB_State
-                if TB_State then
-                    if TB['Selection'] == 'Target' then
-                        TB_Target = TB_GetClosestPlayer()
-                        TB_Locked = TB_Target ~= nil
-                    end
-                else
-                    TB_Target = nil; TB_Locked = false
-                end
-            end
-        end
-    end
-    -- Rapid Fire toggle
-    local rfKey = binds['Rapid Fire Toggle']
-    if rfKey then
-        local ok, kc = pcall(function() return Enum.KeyCode[rfKey:upper()] end)
-        if ok and kc and input.KeyCode == kc then
-            shared.vanity['Character']['Rage']['Rapid Fire']['Enabled'] = not shared.vanity['Character']['Rage']['Rapid Fire']['Enabled']
-        end
-    end
     -- Track LMB for Rapid Fire
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
         RF_MouseDown = true
